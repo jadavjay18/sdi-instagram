@@ -1,0 +1,76 @@
+name: Daily Instagram post
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # 14:00 UTC = 7:30 PM IST (GitHub may start a few minutes late)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Post for this date (YYYY-MM-DD). Leave empty for today (IST)."
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-instagram-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Fetch fonts (Poppins + Inter, SIL Open Font License)
+        run: |
+          mkdir -p fonts && cd fonts
+          for f in Poppins-Bold Poppins-BoldItalic Poppins-Medium; do
+            [ -f "$f.ttf" ] || curl -fsSL -o "$f.ttf" "https://github.com/google/fonts/raw/main/ofl/poppins/$f.ttf"
+          done
+          if [ ! -f Inter-Regular.otf ]; then
+            curl -fsSL -o inter.zip "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip" \
+              && unzip -q -o inter.zip -d inter \
+              && for w in Regular Medium SemiBold; do cp "$(find inter -name "Inter-$w.otf" | head -1)" . || true; done \
+              || echo "Inter not available, using Poppins for body text"
+            rm -rf inter inter.zip
+          fi
+          ls -la
+
+      - name: Write copy + render slides
+        id: prep
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: python -m ig_autopost.main prepare ${{ github.event.inputs.date && format('--date {0}', github.event.inputs.date) || '' }}
+
+      - name: Push slides (gives them public URLs)
+        if: steps.prep.outputs.ready == 'true'
+        run: |
+          git config user.name "sdi-bot"
+          git config user.email "sdi-bot@users.noreply.github.com"
+          git add posts
+          git commit -m "Slides for ${{ github.event.inputs.date || 'today' }}"  || echo "no changes"
+          git push
+
+      - name: Publish to Instagram
+        if: steps.prep.outputs.ready == 'true'
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_API_VERSION: ${{ vars.IG_API_VERSION }}
+        run: python -m ig_autopost.main publish ${{ github.event.inputs.date && format('--date {0}', github.event.inputs.date) || '' }}
+
+      - name: Record post
+        if: steps.prep.outputs.ready == 'true'
+        run: |
+          git add posts/posted.json
+          git commit -m "Posted ${{ github.event.inputs.date || 'today' }}" || echo "nothing to commit"
+          git push
