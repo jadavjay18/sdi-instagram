@@ -66,11 +66,24 @@ jobs:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_API_VERSION: ${{ vars.IG_API_VERSION }}
+          FB_PAGE_ID: ${{ vars.FB_PAGE_ID }}
+          POST_TO_FACEBOOK: ${{ vars.POST_TO_FACEBOOK }}
         run: python -m ig_autopost.main publish ${{ github.event.inputs.date && format('--date {0}', github.event.inputs.date) || '' }}
 
+      - name: Facebook catch-up (already on Instagram, not yet on Facebook)
+        if: steps.prep.outputs.fb_ready == 'true'
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_API_VERSION: ${{ vars.IG_API_VERSION }}
+          FB_PAGE_ID: ${{ vars.FB_PAGE_ID }}
+        run: python -m ig_autopost.main facebook ${{ github.event.inputs.date && format('--date {0}', github.event.inputs.date) || '' }}
+
       - name: Record post
-        if: steps.prep.outputs.ready == 'true'
+        if: steps.prep.outputs.ready == 'true' || steps.prep.outputs.fb_ready == 'true'
         run: |
+          git config user.name "sdi-bot"
+          git config user.email "sdi-bot@users.noreply.github.com"
           git add posts/posted.json
           git commit -m "Posted ${{ github.event.inputs.date || 'today' }}" || echo "nothing to commit"
           git push
