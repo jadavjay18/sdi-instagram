@@ -41,6 +41,15 @@ def publishing_quota(ig_id):
                                params={"fields": "quota_usage,config", "access_token": _token()}, timeout=30))
 
 
+def _recent_media_ids(ig_id):
+    try:
+        data = _check(requests.get(f"{BASE}/{ig_id}/media", params={
+            "fields": "id", "limit": 5, "access_token": _token()}, timeout=30))
+        return [m["id"] for m in data.get("data", [])]
+    except Exception:
+        return []
+
+
 def publish_carousel(image_urls, caption):
     ig_id = os.environ["IG_USER_ID"]
     if not 2 <= len(image_urls) <= 10:
@@ -56,9 +65,23 @@ def publish_carousel(image_urls, caption):
         "media_type": "CAROUSEL", "children": ",".join(children),
         "caption": caption, "access_token": _token()}, timeout=60))
     _wait_ready(parent["id"])
-    published = _check(requests.post(f"{BASE}/{ig_id}/media_publish", data={
-        "creation_id": parent["id"], "access_token": _token()}, timeout=60))
-    media_id = published["id"]
+    before = _recent_media_ids(ig_id)
+    media_id = None
+    for attempt in range(4):
+        r = requests.post(f"{BASE}/{ig_id}/media_publish", data={
+            "creation_id": parent["id"], "access_token": _token()}, timeout=90)
+        if r.status_code < 400:
+            media_id = r.json()["id"]
+            break
+        transient = r.status_code >= 500 or '"is_transient":true' in r.text
+        if not transient or attempt == 3:
+            raise RuntimeError(f"Instagram API error {r.status_code}: {r.text}")
+        # Instagram sometimes publishes the post and still returns an error: check before retrying
+        time.sleep(30)
+        new_ids = [m for m in _recent_media_ids(ig_id) if m not in before]
+        if new_ids:
+            media_id = new_ids[0]
+            break
     link = _check(requests.get(f"{BASE}/{media_id}", params={
         "fields": "permalink", "access_token": _token()}, timeout=30)).get("permalink")
     return media_id, link
