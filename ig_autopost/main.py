@@ -17,6 +17,7 @@ from pathlib import Path
 
 import requests
 
+from .facebook import post_to_page
 from .instagram import publish_carousel
 from .render import render_post
 from .writer import build_caption, write_post
@@ -52,9 +53,14 @@ def set_output(name, value):
 
 
 def prepare(date):
-    if date in load_posted():
-        print(f"{date} already posted, nothing to do.")
+    posted = load_posted()
+    if date in posted:
         set_output("ready", "false")
+        if fb_enabled() and "facebook" not in posted[date] and (POSTS / date / "content.json").exists():
+            print(f"{date} already on Instagram; Facebook post still missing.")
+            set_output("fb_ready", "true")
+        else:
+            print(f"{date} already posted, nothing to do.")
         return
     row = load_row(date)
     if not row:
@@ -102,6 +108,37 @@ def publish(date):
                     "posted_at": datetime.now(IST).isoformat(timespec="seconds")}
     POSTED.write_text(json.dumps(posted, ensure_ascii=False, indent=2))
     print(f"Posted {date}: {link}")
+    if fb_enabled():
+        facebook(date)
+
+
+def fb_enabled():
+    return (os.environ.get("POST_TO_FACEBOOK") or "true").lower() != "false"
+
+
+def facebook(date):
+    """Post the same slides to the Facebook Page. Never undoes or blocks the Instagram post."""
+    posted = load_posted()
+    entry = posted.get(date)
+    if not entry:
+        print(f"{date} is not on Instagram yet; skipping Facebook.")
+        return
+    if "facebook" in entry:
+        print(f"{date} already on Facebook: {entry['facebook']}")
+        return
+    content = json.loads((POSTS / date / "content.json").read_text())
+    urls = [public_url(date, n) for n in content["slide_files"]]
+    try:
+        wait_public(urls)
+        post_id, link = post_to_page(urls, content["caption_full"])
+        entry["facebook"] = link
+        entry.pop("facebook_error", None)
+        print(f"Posted {date} to Facebook: {link}")
+    except Exception as e:  # Instagram post stays; error is recorded and shown as a warning
+        entry["facebook_error"] = str(e)[:500]
+        print(f"::warning::Facebook post failed for {date}: {e}")
+    posted[date] = entry
+    POSTED.write_text(json.dumps(posted, ensure_ascii=False, indent=2))
 
 
 def preview(date):
@@ -117,8 +154,8 @@ def preview(date):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["prepare", "publish", "preview"])
+    ap.add_argument("stage", choices=["prepare", "publish", "facebook", "preview"])
     ap.add_argument("--date", default=None, help="YYYY-MM-DD (default: today in IST)")
     a = ap.parse_args()
     d = a.date or today_ist()
-    {"prepare": prepare, "publish": publish, "preview": preview}[a.stage](d)
+    {"prepare": prepare, "publish": publish, "facebook": facebook, "preview": preview}[a.stage](d)
